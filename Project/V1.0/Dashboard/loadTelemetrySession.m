@@ -1,7 +1,8 @@
 function Sess = loadTelemetrySession(file, opts)
-% LOADTELEMETRYSESSION  Read a simulator .mat file and prepare it for the dashboard.
+% LOADTELEMETRYSESSION  Read a simulator .mat or MoTeC .ld file for the dashboard.
 %
 %   Sess = loadTelemetrySession('session.mat')
+%   Sess = loadTelemetrySession('session.ld')
 %   Sess = loadTelemetrySession('session.mat', struct('Decim',5))   % override a setting
 %
 % Sess.Laps{k} holds one decimated lap (columns, all same length):
@@ -18,7 +19,7 @@ if nargin > 1 && isstruct(opts)
     for i = 1:numel(fn), P.(fn{i}) = opts.(fn{i}); end
 end
 
-D = extractData(load(file));
+D = readMotecData(file);
 v = D.speed;
 
 % ---- sign conventions, relative to yaw rate (yaw rate > 0 = left turn) ----
@@ -122,33 +123,6 @@ Sess.Lim      = Lim;
 Sess.Params   = P;
 Sess.Calib    = struct('WheelBase',Lw,'UndersteerGradient',K,'WheelRadius',R,'GearRatio',G, ...
                        'SignAy',Q.signAy,'SignSteer',Q.signSteer);
-end
-
-%% ------------------------------------------------------------------------
-function D = extractData(S)
-req = {'t','lap','lapTime','x','y','s','yaw','yawRate','speed','ax','ay', ...
-       'steerAngle','driveForceCmd','brakeForce'};
-opt = {'driveForce','motorTorque','wheelTorque'};
-if all(isfield(S,req))
-    src = S;
-else
-    src = [];
-    f = fieldnames(S);
-    for i = 1:numel(f)
-        v = S.(f{i});
-        if istable(v), v = table2struct(v,'ToScalar',true); end
-        if isstruct(v) && isscalar(v) && all(isfield(v,req)), src = v; break; end
-    end
-    if isempty(src)
-        error('Required variables not found in the file. Missing: %s', ...
-            strjoin(req(~isfield(S,req)),', '));
-    end
-end
-D = struct();
-for i = 1:numel(req), D.(req{i}) = double(src.(req{i})(:)); end
-for i = 1:numel(opt)
-    if isfield(src,opt{i}), D.(opt{i}) = double(src.(opt{i})(:)); end
-end
 end
 
 %% ------------------------------------------------------------------------

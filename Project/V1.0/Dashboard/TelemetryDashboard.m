@@ -4,12 +4,13 @@ classdef TelemetryDashboard < handle
 %   app = TelemetryDashboard;                  % open, then click "Load file..."
 %   app = TelemetryDashboard('session.mat');   % open and load a session
 %
-% Requires a recent MATLAB (R2020b or later). No toolbox needed.
+% Requires MATLAB R2020b or later. MAT files need no toolbox; MoTeC .ld import
+% requires Windows and the MoTeC i2 COM interface.
 %
-% Expected .mat content: the simulator variables (t, lap, lapTime, x, y, s,
-% yaw, yawRate, speed, ax, ay, steerAngle, driveForceCmd, driveForce,
-% brakeForce, motorTorque, wheelTorque, ...) either as separate variables,
-% or inside one struct / table.
+% MAT input may contain simulator variables (t, lap, lapTime, x, y, s,
+% yaw, yawRate, speed, ax, ay, steerAngle, driveForceCmd, brakeForce, ...)
+% or DataMaster channel structs. Local .ld files are exported to a temporary
+% MAT file through MoTeC i2, then mapped by channel.
 %
 % Mouse / keyboard:
 %   - click a chart or the track  -> move the cursor there
@@ -31,7 +32,7 @@ classdef TelemetryDashboard < handle
         CornerMinLength    = 20       % [m]
         CornerMergeGap     = 40       % [m] corners closer than this are merged
         NumSectors         = 3
-        FlipGArrow         = false    % false: arrow = car acceleration, true: force felt by the driver
+        FlipGArrow         = false    % false: force felt by the driver, true: car acceleration
     end
 
     properties (Constant, Access = private)
@@ -92,9 +93,9 @@ classdef TelemetryDashboard < handle
         AxG
         AxBal
         AxSV
-        GSpeed
+        GAccelTxt
+        GBrakeTxt
         GRpm
-        LblSpeed
         LblRpm
         Tbl
         H = struct()
@@ -140,7 +141,7 @@ classdef TelemetryDashboard < handle
             % ---------------- top bar ----------------
             tb = uigridlayout(root,[1 10],'ColumnWidth',{95,70,'1x',30,190,30,190,85,150,70}, ...
                 'Padding',[0 0 0 0],'ColumnSpacing',6,'BackgroundColor',C);
-            app.mkButton(tb,'Load file...',@(~,~) app.onLoad());
+            app.mkButton(tb,'Open .ld / .mat...',@(~,~) app.onLoad());
             app.mkButton(tb,'Reload',@(~,~) app.onReload());
             app.LblFile = uilabel(tb,'Text','No file loaded','FontColor',app.MUTED,'FontSize',12);
             app.mkLabel(tb,'Lap');
@@ -195,14 +196,10 @@ classdef TelemetryDashboard < handle
             % right: instruments
             rg = uigridlayout(main,[4 1],'RowHeight',{'0.8x','1.1x','0.55x','1x'}, ...
                 'Padding',[0 0 0 0],'RowSpacing',6,'BackgroundColor',C);
-            gg = uigridlayout(rg,[2 2],'RowHeight',{'1x',30},'ColumnWidth',{'1x','1x'}, ...
+            gg = uigridlayout(rg,[2 1],'RowHeight',{'1x',30},'ColumnWidth',{'1x'}, ...
                 'Padding',[0 0 0 0],'RowSpacing',0,'BackgroundColor',C);
-            app.GSpeed = uigauge(gg,'semicircular','FontColor',app.FG,'BackgroundColor',C);
-            app.GSpeed.Layout.Row = 1; app.GSpeed.Layout.Column = 1;
             app.GRpm = uigauge(gg,'semicircular','FontColor',app.FG,'BackgroundColor',C);
-            app.GRpm.Layout.Row = 1; app.GRpm.Layout.Column = 2;
-            app.LblSpeed = uilabel(gg,'Text','0 km/h','FontSize',20,'FontWeight','bold', ...
-                'FontColor',app.FG,'HorizontalAlignment','center');
+            app.GRpm.Layout.Row = 1; app.GRpm.Layout.Column = 1;
             app.LblRpm = uilabel(gg,'Text','0 rpm','FontSize',20,'FontWeight','bold', ...
                 'FontColor',app.FG,'HorizontalAlignment','center');
             app.AxG = uiaxes(rg);   app.styleAxes(app.AxG);   disableDefaultInteractivity(app.AxG);
@@ -310,9 +307,11 @@ classdef TelemetryDashboard < handle
 
             % ---- steering vs throttle ----
             ax = app.AxSV;
-            title(ax,'Steering vs throttle','Color',F,'FontWeight','normal');
-            xlabel(ax,'Steering (deg)','Color',F); ylabel(ax,'Throttle (%)','Color',F);
+            title(ax,'Steering / throttle (last second)','Color',F,'FontWeight','normal');
+            xlabel(ax,'Steering (+ left, deg)','Color',F); ylabel(ax,'Throttle (%)','Color',F);
             ax.YLim = [-5 105];
+            xline(ax,0,'Color',[0.55 0.57 0.60],'LineStyle',':','PickableParts','none');
+            yline(ax,50,'Color',[0.55 0.57 0.60],'LineStyle',':','PickableParts','none');
             H.sv = plot(ax,NaN,NaN,'.','Color',[0.5 0.55 0.6],'MarkerSize',4,'PickableParts','none');
             H.svTrail = plot(ax,NaN,NaN,'-','Color',app.C1,'LineWidth',1.5,'PickableParts','none');
             H.svDot = plot(ax,NaN,NaN,'o','MarkerFaceColor',app.C1,'MarkerEdgeColor','w', ...
@@ -335,8 +334,9 @@ classdef TelemetryDashboard < handle
             app.GDecor(end+1) = plot(ax,[-gm gm],[0 0],'-','Color',gray,'PickableParts','none');
             app.GDecor(end+1) = plot(ax,[0 0],[-gm gm],'-','Color',gray,'PickableParts','none');
             o = 0.9*gm;
-            app.GDecor(end+1) = text(ax,0,o,'ACCEL','Color',app.MUTED,'FontSize',8,'HorizontalAlignment','center','PickableParts','none');
-            app.GDecor(end+1) = text(ax,0,-o,'BRAKE','Color',app.MUTED,'FontSize',8,'HorizontalAlignment','center','PickableParts','none');
+            app.GAccelTxt = text(ax,0,o,'ACCEL','Color',app.MUTED,'FontSize',8,'HorizontalAlignment','center','PickableParts','none');
+            app.GBrakeTxt = text(ax,0,-o,'BRAKE','Color',app.MUTED,'FontSize',8,'HorizontalAlignment','center','PickableParts','none');
+            app.GDecor(end+1:end+2) = [app.GAccelTxt app.GBrakeTxt];
             app.GDecor(end+1) = text(ax,-o,0,'L','Color',app.MUTED,'FontSize',9,'HorizontalAlignment','center','PickableParts','none');
             app.GDecor(end+1) = text(ax,o,0,'R','Color',app.MUTED,'FontSize',9,'HorizontalAlignment','center','PickableParts','none');
             ax.XLim = 1.05*gm*[-1 1]; ax.YLim = 1.05*gm*[-1 1];
@@ -351,7 +351,8 @@ classdef TelemetryDashboard < handle
     methods (Access = private)
 
         function onLoad(app)
-            [f,p] = uigetfile({'*.mat','MAT-files (*.mat)'},'Select a session file',app.LastDir);
+            [f,p] = uigetfile({'*.ld','MoTeC log files (*.ld)';'*.mat','MAT-files (*.mat)'}, ...
+                'Select a telemetry session',app.LastDir);
             figure(app.Fig);
             if isequal(f,0), return; end
             app.LastDir = p;
@@ -367,8 +368,13 @@ classdef TelemetryDashboard < handle
             dlg = uiprogressdlg(app.Fig,'Title','Loading','Message','Reading session...','Indeterminate','on');
             cleanup = onCleanup(@() close(dlg)); %#ok<NASGU>
             try
-                S = load(file);
-                D = app.extractData(S);
+                [~,~,ext] = fileparts(file);
+                if strcmpi(ext,'.ld')
+                    D = readMotecData(file);
+                else
+                    S = load(file);
+                    D = app.extractData(S);
+                end
                 dlg.Message = 'Processing laps...';
                 app.prepareSession(D);
             catch ME
@@ -402,8 +408,11 @@ classdef TelemetryDashboard < handle
                     end
                 end
                 if isempty(src)
-                    error('Required variables not found in the file. Missing: %s', ...
-                        strjoin(req(~isfield(S,req)),', '));
+                    D = readMotecData(S);
+                    return
+                elseif ~all(isfield(src,req))
+                    D = readMotecData(src);
+                    return
                 end
             end
             D = struct();
@@ -543,8 +552,6 @@ classdef TelemetryDashboard < handle
             app.Ax(4).YLim = max(5,ceil(rmax*1.1))*[-1 1];
             app.AxSV.XLim = app.Ax(3).YLim;
 
-            app.GSpeed.Value = 0; app.GSpeed.Limits = [0 vtop];
-            app.GSpeed.MajorTicks = 0:max(50,ceil(vtop/6/50)*50):vtop;
             if isnan(rpmmax), rtop = 1000; else, rtop = max(1000,ceil(rpmmax/1000)*1000); end
             app.GRpm.Value = 0; app.GRpm.Limits = [0 rtop];
             app.GRpm.MajorTicks = 0:max(1000,ceil(rtop/5000)*1000):rtop;
@@ -623,7 +630,7 @@ classdef TelemetryDashboard < handle
             set(H.str,'XData',Lp.s,'YData',Lp.steer);
             set(H.yaw,'XData',Lp.s,'YData',Lp.rA);
             set(H.yawE,'XData',Lp.s,'YData',Lp.rE);
-            set(H.sv,'XData',Lp.steer(1:3:end),'YData',Lp.thr(1:3:end));
+            set(H.sv,'XData',app.SignSteer*Lp.steer(1:3:end),'YData',Lp.thr(1:3:end));
             if app.RefIdx > 0
                 Rp = app.Laps{app.RefIdx};
                 set(H.spdR,'XData',Rp.s,'YData',Rp.vk,'DisplayName',sprintf('Ref: lap %d',Rp.id));
@@ -682,8 +689,6 @@ classdef TelemetryDashboard < handle
 
             % gauges
             vk = Lp.vk(i);
-            app.GSpeed.Value = min(max(vk,app.GSpeed.Limits(1)),app.GSpeed.Limits(2));
-            app.LblSpeed.Text = sprintf('%.0f km/h',vk);
             rp = Lp.rpm(i);
             if isnan(rp)
                 app.GRpm.Value = app.GRpm.Limits(1); app.LblRpm.Text = 'n/a';
@@ -693,8 +698,18 @@ classdef TelemetryDashboard < handle
             end
 
             % G circle
-            sg = 1; if app.FlipGArrow, sg = -1; end
-            gx = sg*Lp.glat(i); gy = sg*Lp.glon(i);
+            accelPos = app.GAccelTxt.Position;
+            brakePos = app.GBrakeTxt.Position;
+            if app.FlipGArrow
+                gx = Lp.glat(i); gy = Lp.glon(i);
+                accelPos(2) = abs(accelPos(2));
+            else
+                gx = -Lp.glat(i); gy = -Lp.glon(i);
+                accelPos(2) = -abs(accelPos(2));
+            end
+            brakePos(2) = -accelPos(2);
+            app.GAccelTxt.Position = accelPos;
+            app.GBrakeTxt.Position = brakePos;
             H.garr.UData = gx; H.garr.VData = gy;
             H.gdot.XData = gx; H.gdot.YData = gy;
             app.AxG.Title.String = sprintf('G-force: %.2f g',hypot(gx,gy));
@@ -714,8 +729,8 @@ classdef TelemetryDashboard < handle
 
             % steering vs throttle
             j = max(1,i - app.TrailN);
-            H.svTrail.XData = Lp.steer(j:i); H.svTrail.YData = Lp.thr(j:i);
-            H.svDot.XData = Lp.steer(i);     H.svDot.YData = Lp.thr(i);
+            H.svTrail.XData = app.SignSteer*Lp.steer(j:i); H.svTrail.YData = Lp.thr(j:i);
+            H.svDot.XData = app.SignSteer*Lp.steer(i);     H.svDot.YData = Lp.thr(i);
 
             % readout
             dl = app.Delta(i);
