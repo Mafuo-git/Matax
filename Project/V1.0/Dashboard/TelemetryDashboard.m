@@ -102,11 +102,14 @@ classdef TelemetryDashboard < handle
         AxBal
         AxSV
         AxRpm
+        AxWheel
+        WheelTransform
         GAccelTxt
         GBrakeTxt
         RpmLeds = gobjects(1,10)
         RpmMax = 1
         LblRpm
+        LblWheelAngle
         Tbl
         H = struct()
         GDecor = gobjects(0)
@@ -215,7 +218,7 @@ classdef TelemetryDashboard < handle
             end
 
             % right: instruments
-            rg = uigridlayout(main,[4 1],'RowHeight',{'0.8x','1.1x','0.55x','1x'}, ...
+            rg = uigridlayout(main,[5 1],'RowHeight',{'0.65x','1.0x','0.5x','1.1x','1x'}, ...
                 'Padding',[0 0 0 0],'RowSpacing',6,'BackgroundColor',C);
             gg = uigridlayout(rg,[2 1],'RowHeight',{'1x',30},'ColumnWidth',{'1x'}, ...
                 'Padding',[0 0 0 0],'RowSpacing',0,'BackgroundColor',C);
@@ -237,6 +240,20 @@ classdef TelemetryDashboard < handle
                 'FontColor',app.FG,'HorizontalAlignment','center');
             app.AxG = uiaxes(rg);   app.styleAxes(app.AxG);   disableDefaultInteractivity(app.AxG);
             app.AxBal = uiaxes(rg); app.styleAxes(app.AxBal); disableDefaultInteractivity(app.AxBal);
+            wg = uigridlayout(rg,[2 1],'RowHeight',{'1x',24},'Padding',[0 0 0 0], ...
+                'RowSpacing',0,'BackgroundColor',C);
+            app.AxWheel = uiaxes(wg);
+            app.styleAxes(app.AxWheel);
+            app.AxWheel.XLim = [-1.5 1.5]; app.AxWheel.YLim = [-1.05 1.05];
+            app.AxWheel.XTick = []; app.AxWheel.YTick = [];
+            app.AxWheel.XGrid = 'off'; app.AxWheel.YGrid = 'off';
+            app.AxWheel.Box = 'off';
+            axis(app.AxWheel,'equal');
+            disableDefaultInteractivity(app.AxWheel);
+            title(app.AxWheel,'Steering wheel','Color',app.FG,'FontWeight','normal');
+            app.initSteeringWheel();
+            app.LblWheelAngle = uilabel(wg,'Text','0.0 deg','FontSize',13,'FontWeight','bold', ...
+                'FontColor',app.FG,'HorizontalAlignment','center');
             app.AxSV = uiaxes(rg);  app.styleAxes(app.AxSV);
 
             app.initPlots();
@@ -350,6 +367,34 @@ classdef TelemetryDashboard < handle
 
             app.H = H;
             app.buildGCircle(2);
+        end
+
+        function initSteeringWheel(app)
+            ax = app.AxWheel;
+            app.WheelTransform = hgtransform('Parent',ax);
+            outerX = [-1 1 1 0.78 -0.78 -1];
+            outerY = [-0.55 -0.55 0.38 0.68 0.68 0.38];
+            patch(app.WheelTransform,outerX,outerY,[0.06 0.07 0.08], ...
+                'EdgeColor',[0.50 0.53 0.57],'LineWidth',2);
+            innerX = [-0.78 0.78 0.78 0.62 -0.62 -0.78];
+            innerY = [-0.36 -0.36 0.35 0.50 0.50 0.35];
+            patch(app.WheelTransform,innerX,innerY,app.PANEL, ...
+                'EdgeColor',[0.36 0.39 0.43],'LineWidth',1.5);
+            patch(app.WheelTransform,[-0.38 0.38 0.38 -0.38], ...
+                [-0.25 -0.25 0.25 0.25],[0.09 0.10 0.12], ...
+                'EdgeColor',[0.55 0.58 0.62],'LineWidth',1.2);
+            plot(app.WheelTransform,[-0.29 0.29],[0.08 0.08],'-', ...
+                'Color',[0.30 0.75 1.00],'LineWidth',2);
+            plot(app.WheelTransform,[-0.29 0.29],[-0.08 -0.08],'-', ...
+                'Color',[0.36 0.39 0.43],'LineWidth',1);
+            plot(app.WheelTransform,[-0.67 -0.50],[0.18 0.18],'o', ...
+                'Color',[1.00 0.35 0.30],'MarkerFaceColor',[1.00 0.35 0.30], ...
+                'MarkerSize',5,'LineStyle','none');
+            plot(app.WheelTransform,[0.50 0.67],[0.18 0.18],'o', ...
+                'Color',[0.25 0.85 0.45],'MarkerFaceColor',[0.25 0.85 0.45], ...
+                'MarkerSize',5,'LineStyle','none');
+            patch(app.WheelTransform,[-0.09 0 0.09],[0.78 0.94 0.78],app.CY, ...
+                'EdgeColor','none');
         end
 
         function buildGCircle(app, gm)
@@ -730,6 +775,10 @@ classdef TelemetryDashboard < handle
                     app.RpmLeds(k).FaceColor = app.PANEL;
                 end
             end
+            steeringWheelAngle = app.SignSteer*Lp.steer(i)*app.SteeringRatio;
+            c = cosd(steeringWheelAngle); s = sind(steeringWheelAngle);
+            app.WheelTransform.Matrix = [c -s 0 0; s c 0 0; 0 0 1 0; 0 0 0 1];
+            app.LblWheelAngle.Text = sprintf('%+.1f deg',steeringWheelAngle);
 
             % G circle
             accelPos = app.GAccelTxt.Position;
