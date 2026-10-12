@@ -4,17 +4,17 @@ classdef TelemetryDashboard < handle
 %   app = TelemetryDashboard;                  % open, then click "Load file..."
 %   app = TelemetryDashboard('session.mat');   % open and load a session
 %
-% Requires MATLAB R2020b or later. MAT files need no toolbox; MoTeC .ld import
-% requires Windows and the MoTeC i2 COM interface.
+% Requires MATLAB R2020b or later. Supports CSV and MAT telemetry files.
 %
 % MAT input may contain simulator variables (t, lap, lapTime, x, y, s,
 % yaw, yawRate, speed, ax, ay, steerAngle, driveForceCmd, brakeForce, ...)
-% or DataMaster channel structs. Local .ld files are exported to a temporary
-% MAT file through MoTeC i2, then mapped by channel.
+% or channel structs. CSV files should contain equivalent named columns.
 %
 % Mouse / keyboard:
 %   - click a chart or the track  -> move the cursor there
-%   - mouse wheel / drag on charts -> zoom / pan (all charts are linked), "Fit" resets
+%   - mouse wheel / drag on charts -> zoom / pan (all charts are linked)
+%   - mouse wheel / drag on the track -> zoom / pan the circuit
+%   - "Fit all" restores the normal scale for the charts and track
 %   - click a row of the corner/sector table -> jump to it and zoom on it
 %   - Space = play/pause, Left/Right arrows = step -/+ 0.5 s
 
@@ -69,6 +69,13 @@ classdef TelemetryDashboard < handle
         HeadLen  = 10
         BalScale = 10
         TrailN   = 100
+        TrackXLim = [-1 1]
+        TrackYLim = [-1 1]
+        DragAx = []
+        DragStartPixel = [0 0]
+        DragStartXLim = [0 1]
+        DragStartYLim = [0 1]
+        DragMoved = false
         % playback
         Tc = 0
         Dir = 1
@@ -82,6 +89,7 @@ classdef TelemetryDashboard < handle
         DDLap
         DDRef
         DDColor
+        DDXAxis
         DDView
         DDRate
         Slider
@@ -93,9 +101,11 @@ classdef TelemetryDashboard < handle
         AxG
         AxBal
         AxSV
+        AxRpm
         GAccelTxt
         GBrakeTxt
-        GRpm
+        RpmLeds = gobjects(1,10)
+        RpmMax = 1
         LblRpm
         Tbl
         H = struct()
@@ -108,6 +118,10 @@ classdef TelemetryDashboard < handle
         function app = TelemetryDashboard(file)
             app.LastDir = pwd;
             app.buildUI();
+            app.Fig.WindowScrollWheelFcn = @(~,e) app.onScroll(e);
+            app.Fig.WindowButtonDownFcn = @(~,~) app.onMouseDown();
+            app.Fig.WindowButtonMotionFcn = @(~,~) app.onMouseMove();
+            app.Fig.WindowButtonUpFcn = @(~,~) app.onMouseUp();
             if nargin > 0 && ~isempty(file)
                 app.loadFile(file);
             end
@@ -139,9 +153,9 @@ classdef TelemetryDashboard < handle
                 'Padding',[8 8 8 8],'RowSpacing',6,'BackgroundColor',C);
 
             % ---------------- top bar ----------------
-            tb = uigridlayout(root,[1 10],'ColumnWidth',{95,70,'1x',30,190,30,190,85,150,70}, ...
+            tb = uigridlayout(root,[1 12],'ColumnWidth',{95,70,'1x',30,150,30,150,75,130,50,110,70}, ...
                 'Padding',[0 0 0 0],'ColumnSpacing',6,'BackgroundColor',C);
-            app.mkButton(tb,'Open .ld / .mat...',@(~,~) app.onLoad());
+            app.mkButton(tb,'Open CSV / MAT...',@(~,~) app.onLoad());
             app.mkButton(tb,'Reload',@(~,~) app.onReload());
             app.LblFile = uilabel(tb,'Text','No file loaded','FontColor',app.MUTED,'FontSize',12);
             app.mkLabel(tb,'Lap');
@@ -150,7 +164,10 @@ classdef TelemetryDashboard < handle
             app.DDRef = app.mkDropdown(tb,{'None'},@(~,~) app.onRefChange());
             app.mkLabel(tb,'Track color');
             app.DDColor = app.mkDropdown(tb,{'Speed','Longitudinal G','Lateral G'},@(~,~) app.updateTrackColor());
-            app.mkButton(tb,'Fit',@(~,~) app.fitView());
+            app.mkLabel(tb,'X axis');
+            app.DDXAxis = app.mkDropdown(tb,{'Distance','Time'},@(~,~) app.onXAxisChange());
+            app.DDXAxis.ItemsData = {'Distance','Time'};
+            app.mkButton(tb,'Fit all',@(~,~) app.fitView());
 
             % ---------------- bottom bar ----------------
             bb = uigridlayout(root,[1 6],'ColumnWidth',{80,80,80,90,'1x',380}, ...
@@ -176,6 +193,7 @@ classdef TelemetryDashboard < handle
                 'RowSpacing',8,'BackgroundColor',C);
             app.AxTrack = uiaxes(lg);
             app.styleAxes(app.AxTrack);
+            disableDefaultInteractivity(app.AxTrack);
             tg = uigridlayout(lg,[2 1],'RowHeight',{26,'1x'},'Padding',[0 0 0 0], ...
                 'RowSpacing',4,'BackgroundColor',C);
             app.DDView = app.mkDropdown(tg,{'Corners','Sectors'},@(~,~) app.updateTable());
@@ -192,14 +210,29 @@ classdef TelemetryDashboard < handle
                 if k < 5, app.Ax(k).XTickLabel = {}; end
             end
             linkaxes(app.Ax,'x');
+            for k = 1:5
+                disableDefaultInteractivity(app.Ax(k));
+            end
 
             % right: instruments
             rg = uigridlayout(main,[4 1],'RowHeight',{'0.8x','1.1x','0.55x','1x'}, ...
                 'Padding',[0 0 0 0],'RowSpacing',6,'BackgroundColor',C);
             gg = uigridlayout(rg,[2 1],'RowHeight',{'1x',30},'ColumnWidth',{'1x'}, ...
                 'Padding',[0 0 0 0],'RowSpacing',0,'BackgroundColor',C);
-            app.GRpm = uigauge(gg,'semicircular','FontColor',app.FG,'BackgroundColor',C);
-            app.GRpm.Layout.Row = 1; app.GRpm.Layout.Column = 1;
+            app.AxRpm = uiaxes(gg);
+            app.styleAxes(app.AxRpm);
+            app.AxRpm.XLim = [0 10]; app.AxRpm.YLim = [0 1];
+            app.AxRpm.XTick = []; app.AxRpm.YTick = [];
+            app.AxRpm.XGrid = 'off'; app.AxRpm.YGrid = 'off';
+            app.AxRpm.Box = 'off';
+            disableDefaultInteractivity(app.AxRpm);
+            title(app.AxRpm,'RPM','Color',app.MUTED,'FontWeight','normal');
+            ledColors = [repmat([0.25 0.85 0.45],5,1); ...
+                repmat([1.00 0.80 0.20],3,1); repmat([1.00 0.35 0.30],2,1)];
+            for k = 1:10
+                app.RpmLeds(k) = rectangle(app.AxRpm,'Position',[k-0.86 0.28 0.72 0.42], ...
+                    'Curvature',0.15,'FaceColor',app.PANEL,'EdgeColor',ledColors(k,:),'LineWidth',1);
+            end
             app.LblRpm = uilabel(gg,'Text','0 rpm','FontSize',20,'FontWeight','bold', ...
                 'FontColor',app.FG,'HorizontalAlignment','center');
             app.AxG = uiaxes(rg);   app.styleAxes(app.AxG);   disableDefaultInteractivity(app.AxG);
@@ -253,13 +286,11 @@ classdef TelemetryDashboard < handle
                 'MarkerEdgeColor','k','PickableParts','none');
             colormap(ax,'turbo');
             app.Cbar = colorbar(ax,'Color',F);
-            ax.ButtonDownFcn = @(~,~) app.onTrackClick();
 
             % ---- stacked charts ----
             names = {'Speed (km/h)','Throttle / Brake (%)','Steering (deg)','Yaw rate (deg/s)','Delta vs ref (s)'};
             for k = 1:5
                 ylabel(app.Ax(k),names{k},'Color',F);
-                app.Ax(k).ButtonDownFcn = @(src,~) app.onAxesClick(src);
             end
             xlabel(app.Ax(5),'Distance (m)','Color',F);
             mk = @(a,c,varargin) plot(a,NaN,NaN,'Color',c,'LineWidth',1.4,'PickableParts','none',varargin{:});
@@ -351,9 +382,9 @@ classdef TelemetryDashboard < handle
     methods (Access = private)
 
         function onLoad(app)
-            [f,p] = uigetfile({'*.ld','MoTeC log files (*.ld)';'*.mat','MAT-files (*.mat)'}, ...
+            [f,p] = uigetfile({'*.csv;*.mat','Telemetry files (*.csv, *.mat)'; ...
+                '*.csv','CSV files (*.csv)';'*.mat','MAT-files (*.mat)'}, ...
                 'Select a telemetry session',app.LastDir);
-            figure(app.Fig);
             if isequal(f,0), return; end
             app.LastDir = p;
             app.loadFile(fullfile(p,f));
@@ -368,13 +399,7 @@ classdef TelemetryDashboard < handle
             dlg = uiprogressdlg(app.Fig,'Title','Loading','Message','Reading session...','Indeterminate','on');
             cleanup = onCleanup(@() close(dlg)); %#ok<NASGU>
             try
-                [~,~,ext] = fileparts(file);
-                if strcmpi(ext,'.ld')
-                    D = readMotecData(file);
-                else
-                    S = load(file);
-                    D = app.extractData(S);
-                end
+                D = readTelemetryData(file);
                 dlg.Message = 'Processing laps...';
                 app.prepareSession(D);
             catch ME
@@ -389,37 +414,6 @@ classdef TelemetryDashboard < handle
             app.populateDropdowns();
             app.applySessionLimits();
             app.selectLap(app.SelIdx, 0);
-        end
-
-        function D = extractData(~, S)
-            req = {'t','lap','lapTime','x','y','s','yaw','yawRate','speed','ax','ay', ...
-                   'steerAngle','driveForceCmd','brakeForce'};
-            opt = {'driveForce','motorTorque','wheelTorque'};
-            if all(isfield(S,req))
-                src = S;
-            else
-                src = [];
-                f = fieldnames(S);
-                for i = 1:numel(f)
-                    v = S.(f{i});
-                    if istable(v), v = table2struct(v,'ToScalar',true); end
-                    if isstruct(v) && isscalar(v) && all(isfield(v,req))
-                        src = v; break
-                    end
-                end
-                if isempty(src)
-                    D = readMotecData(S);
-                    return
-                elseif ~all(isfield(src,req))
-                    D = readMotecData(src);
-                    return
-                end
-            end
-            D = struct();
-            for i = 1:numel(req), D.(req{i}) = double(src.(req{i})(:)); end
-            for i = 1:numel(opt)
-                if isfield(src,opt{i}), D.(opt{i}) = double(src.(opt{i})(:)); end
-            end
         end
 
         function prepareSession(app, D)
@@ -553,14 +547,15 @@ classdef TelemetryDashboard < handle
             app.AxSV.XLim = app.Ax(3).YLim;
 
             if isnan(rpmmax), rtop = 1000; else, rtop = max(1000,ceil(rpmmax/1000)*1000); end
-            app.GRpm.Value = 0; app.GRpm.Limits = [0 rtop];
-            app.GRpm.MajorTicks = 0:max(1000,ceil(rtop/5000)*1000):rtop;
+            app.RpmMax = rtop;
 
             rg = [max(X(:,2))-min(X(:,1)), max(X(:,4))-min(X(:,3))];
             pad = 0.05*max(rg);
             app.AxTrack.XLim = [min(X(:,1)) max(X(:,2))] + pad*[-1 1];
             app.AxTrack.YLim = [min(X(:,3)) max(X(:,4))] + pad*[-1 1];
             axis(app.AxTrack,'equal');
+            app.TrackXLim = app.AxTrack.XLim;
+            app.TrackYLim = app.AxTrack.YLim;
             app.HeadLen = 0.03*max(rg);
 
             app.buildGCircle(max(1,ceil(gmax*2)/2));
@@ -624,34 +619,66 @@ classdef TelemetryDashboard < handle
 
         function refreshLap(app)
             Lp = app.Laps{app.SelIdx}; H = app.H;
-            set(H.spd,'XData',Lp.s,'YData',Lp.vk,'DisplayName',sprintf('Lap %d',Lp.id));
-            set(H.thr,'XData',Lp.s,'YData',Lp.thr);
-            set(H.brk,'XData',Lp.s,'YData',Lp.brk);
-            set(H.str,'XData',Lp.s,'YData',Lp.steer);
-            set(H.yaw,'XData',Lp.s,'YData',Lp.rA);
-            set(H.yawE,'XData',Lp.s,'YData',Lp.rE);
+            x = app.graphX(Lp);
+            set(H.spd,'XData',x,'YData',Lp.vk,'DisplayName',sprintf('Lap %d',Lp.id));
+            set(H.thr,'XData',x,'YData',Lp.thr);
+            set(H.brk,'XData',x,'YData',Lp.brk);
+            set(H.str,'XData',x,'YData',Lp.steer);
+            set(H.yaw,'XData',x,'YData',Lp.rA);
+            set(H.yawE,'XData',x,'YData',Lp.rE);
             set(H.sv,'XData',app.SignSteer*Lp.steer(1:3:end),'YData',Lp.thr(1:3:end));
             if app.RefIdx > 0
                 Rp = app.Laps{app.RefIdx};
-                set(H.spdR,'XData',Rp.s,'YData',Rp.vk,'DisplayName',sprintf('Ref: lap %d',Rp.id));
-                set(H.thrR,'XData',Rp.s,'YData',Rp.thr);
-                set(H.brkR,'XData',Rp.s,'YData',Rp.brk);
-                set(H.strR,'XData',Rp.s,'YData',Rp.steer);
+                xr = app.graphX(Rp);
+                set(H.spdR,'XData',xr,'YData',Rp.vk,'DisplayName',sprintf('Ref: lap %d',Rp.id));
+                set(H.thrR,'XData',xr,'YData',Rp.thr);
+                set(H.brkR,'XData',xr,'YData',Rp.brk);
+                set(H.strR,'XData',xr,'YData',Rp.steer);
                 set(H.trkRef,'XData',Rp.x,'YData',Rp.y);
                 app.Delta = Lp.tl - interp1(Rp.s,Rp.tl,Lp.s,'linear',NaN);
             else
                 set([H.spdR H.thrR H.brkR H.strR H.trkRef],'XData',[],'YData',[]);
                 app.Delta = nan(size(Lp.s));
             end
-            set(H.dlt,'XData',Lp.s,'YData',app.Delta);
+            set(H.dlt,'XData',x,'YData',app.Delta);
+            if strcmp(app.DDXAxis.Value,'Time')
+                xlabel(app.Ax(5),'Lap time (s)','Color',app.FG);
+            else
+                xlabel(app.Ax(5),'Distance (m)','Color',app.FG);
+            end
             app.updateTrackColor();
             app.updateTable();
-            app.fitView();
+            app.fitGraphs();
         end
 
         function fitView(app)
             if isempty(app.Laps), return; end
-            app.Ax(1).XLim = [0 max(app.Laps{app.SelIdx}.s(end),1)];
+            app.fitGraphs();
+            app.AxTrack.XLim = app.TrackXLim;
+            app.AxTrack.YLim = app.TrackYLim;
+            axis(app.AxTrack,'equal');
+        end
+
+        function fitGraphs(app)
+            if isempty(app.Laps), return; end
+            x = app.graphX(app.Laps{app.SelIdx});
+            app.Ax(1).XLim = [0 max(x(end),1)];
+        end
+
+        function x = graphX(app, Lp)
+            if strcmp(app.DDXAxis.Value,'Time')
+                x = Lp.tl;
+            else
+                x = Lp.s;
+            end
+        end
+
+        function x = graphXAtDistance(app, Lp, s)
+            if strcmp(app.DDXAxis.Value,'Time')
+                x = interp1(Lp.s,Lp.tl,s,'linear','extrap');
+            else
+                x = s;
+            end
         end
 
         function updateTrackColor(app)
@@ -680,7 +707,8 @@ classdef TelemetryDashboard < handle
             if isempty(i), i = numel(Lp.tl); end
             if i > 1 && (tc - Lp.tl(i-1)) < (Lp.tl(i) - tc), i = i - 1; end
 
-            for k = 1:5, app.Cur(k).Value = Lp.s(i); end
+            x = app.graphX(Lp);
+            for k = 1:5, app.Cur(k).Value = x(i); end
 
             % track
             H.car.XData = Lp.x(i); H.car.YData = Lp.y(i);
@@ -691,10 +719,16 @@ classdef TelemetryDashboard < handle
             vk = Lp.vk(i);
             rp = Lp.rpm(i);
             if isnan(rp)
-                app.GRpm.Value = app.GRpm.Limits(1); app.LblRpm.Text = 'n/a';
+                app.LblRpm.Text = 'n/a';
             else
-                app.GRpm.Value = min(max(rp,app.GRpm.Limits(1)),app.GRpm.Limits(2));
                 app.LblRpm.Text = sprintf('%.0f rpm',rp);
+            end
+            for k = 1:numel(app.RpmLeds)
+                if ~isnan(rp) && rp >= k*app.RpmMax/numel(app.RpmLeds)
+                    app.RpmLeds(k).FaceColor = app.RpmLeds(k).EdgeColor;
+                else
+                    app.RpmLeds(k).FaceColor = app.PANEL;
+                end
             end
 
             % G circle
@@ -833,6 +867,12 @@ classdef TelemetryDashboard < handle
             app.selectLap(app.DDLap.Value,0);
         end
 
+        function onXAxisChange(app)
+            if isempty(app.Laps), return; end
+            app.refreshLap();
+            app.setCursor(app.Tc);
+        end
+
         function onRefChange(app)
             app.RefIdx = app.DDRef.Value;
             if isempty(app.Laps), return; end
@@ -852,7 +892,7 @@ classdef TelemetryDashboard < handle
             if isempty(app.Laps), return; end
             p = ax.CurrentPoint(1,1);
             Lp = app.Laps{app.SelIdx};
-            [~,i] = min(abs(Lp.s - p));
+            [~,i] = min(abs(app.graphX(Lp) - p));
             app.pausePlayback(); app.setCursor(Lp.tl(i));
         end
 
@@ -862,6 +902,94 @@ classdef TelemetryDashboard < handle
             Lp = app.Laps{app.SelIdx};
             [~,i] = min((Lp.x - p(1)).^2 + (Lp.y - p(2)).^2);
             app.pausePlayback(); app.setCursor(Lp.tl(i));
+        end
+
+        function onScroll(app, e)
+            if isempty(app.Laps), return; end
+            ax = app.axesAtPointer();
+            if isempty(ax), return; end
+            count = e.VerticalScrollCount;
+            if count == 0, return; end
+            factor = 1.2^count;
+            if any(ax == app.Ax)
+                lim = ax.XLim;
+                point = ax.CurrentPoint(1,1);
+                span = diff(lim);
+                x = app.graphX(app.Laps{app.SelIdx});
+                full = max(x(end),1);
+                newSpan = min(max(span*factor,full/1000),full*20);
+                anchor = min(max((point-lim(1))/span,0),1);
+                newLim = point - anchor*newSpan + [0 newSpan];
+                ax.XLim = newLim;
+            elseif ax == app.AxTrack
+                point = ax.CurrentPoint(1,1:2);
+                xlim = ax.XLim; ylim = ax.YLim;
+                xspan = diff(xlim); yspan = diff(ylim);
+                fullX = diff(app.TrackXLim); fullY = diff(app.TrackYLim);
+                newXSpan = min(max(xspan*factor,fullX/1000),fullX*20);
+                newYSpan = min(max(yspan*factor,fullY/1000),fullY*20);
+                anchorX = min(max((point(1)-xlim(1))/xspan,0),1);
+                anchorY = min(max((point(2)-ylim(1))/yspan,0),1);
+                ax.XLim = point(1) - anchorX*newXSpan + [0 newXSpan];
+                ax.YLim = point(2) - anchorY*newYSpan + [0 newYSpan];
+                axis(ax,'equal');
+            end
+        end
+
+        function onMouseDown(app)
+            ax = app.axesAtPointer();
+            if isempty(ax) || (~any(ax == app.Ax) && ax ~= app.AxTrack)
+                app.DragAx = [];
+                return
+            end
+            app.DragAx = ax;
+            app.DragStartPixel = app.Fig.CurrentPoint;
+            app.DragStartXLim = ax.XLim;
+            app.DragStartYLim = ax.YLim;
+            app.DragMoved = false;
+        end
+
+        function onMouseMove(app)
+            if isempty(app.DragAx) || ~isvalid(app.DragAx), return; end
+            pixel = app.Fig.CurrentPoint;
+            delta = pixel - app.DragStartPixel;
+            if ~app.DragMoved && norm(delta) < 4, return; end
+            app.DragMoved = true;
+            bounds = getpixelposition(app.DragAx,true);
+            if bounds(3) <= 0 || bounds(4) <= 0, return; end
+            xlim = app.DragStartXLim - delta(1)*diff(app.DragStartXLim)/bounds(3);
+            app.DragAx.XLim = xlim;
+            if app.DragAx == app.AxTrack
+                ylim = app.DragStartYLim - delta(2)*diff(app.DragStartYLim)/bounds(4);
+                app.DragAx.YLim = ylim;
+                axis(app.DragAx,'equal');
+            end
+        end
+
+        function onMouseUp(app)
+            ax = app.DragAx;
+            moved = app.DragMoved;
+            app.DragAx = [];
+            app.DragMoved = false;
+            if moved || isempty(ax) || ~isvalid(ax), return; end
+            if any(ax == app.Ax)
+                app.onAxesClick(ax);
+            elseif ax == app.AxTrack
+                app.onTrackClick();
+            end
+        end
+
+        function ax = axesAtPointer(app)
+            ax = [];
+            obj = hittest(app.Fig);
+            while ~isempty(obj)
+                if isa(obj,'matlab.ui.control.UIAxes')
+                    ax = obj;
+                    return
+                end
+                if ~isprop(obj,'Parent'), return; end
+                obj = obj.Parent;
+            end
         end
 
         function onTableSelect(app, e)
@@ -877,7 +1005,7 @@ classdef TelemetryDashboard < handle
             end
             Lp = app.Laps{app.SelIdx};
             [~,i] = min(abs(Lp.s - s0));
-            app.Ax(1).XLim = xl;
+            app.Ax(1).XLim = [app.graphXAtDistance(Lp,xl(1)),app.graphXAtDistance(Lp,xl(2))];
             app.pausePlayback(); app.setCursor(Lp.tl(i));
         end
 
