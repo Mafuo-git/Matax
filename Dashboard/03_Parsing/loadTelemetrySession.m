@@ -1,8 +1,8 @@
 function Sess = loadTelemetrySession(file, opts)
-% LOADTELEMETRYSESSION  Read a telemetry .csv or .mat file for the dashboard.
+% LOADTELEMETRYSESSION  Read a simulator .mat or MoTeC .ld file for the dashboard.
 %
 %   Sess = loadTelemetrySession('session.mat')
-%   Sess = loadTelemetrySession('session.csv')
+%   Sess = loadTelemetrySession('session.ld')
 %   Sess = loadTelemetrySession('session.mat', struct('Decim',5))   % override a setting
 %
 % Sess.Laps{k} holds one decimated lap (columns, all same length):
@@ -19,7 +19,7 @@ if nargin > 1 && isstruct(opts)
     for i = 1:numel(fn), P.(fn{i}) = opts.(fn{i}); end
 end
 
-D = readTelemetryData(file);
+D = readMotecData(file);
 v = D.speed;
 
 % ---- sign conventions, relative to yaw rate (yaw rate > 0 = left turn) ----

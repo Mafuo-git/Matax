@@ -4,11 +4,14 @@ classdef TelemetryDashboard < handle
 %   app = TelemetryDashboard;                  % open, then click "Load file..."
 %   app = TelemetryDashboard('session.mat');   % open and load a session
 %
-% Requires MATLAB R2020b or later. Supports CSV and MAT telemetry files.
+% Requires MATLAB R2020b or later.
 %
-% MAT input may contain simulator variables (t, lap, lapTime, x, y, s,
-% yaw, yawRate, speed, ax, ay, steerAngle, driveForceCmd, brakeForce, ...)
-% or channel structs. CSV files should contain equivalent named columns.
+% Supported inputs (format auto-detected by DataParserMain):
+%   - SimLap        (.mat)
+%   - CarSim        (.mat)
+%   - Assetto Corsa (.mat or MoTeC .csv)
+% Needs DataParserMain.m, parseSimLap.m, parseCarSim.m and parseAssetto.m
+% on the MATLAB path.
 %
 % Mouse / keyboard:
 %   - click a chart or the track  -> move the cursor there
@@ -444,7 +447,8 @@ classdef TelemetryDashboard < handle
             dlg = uiprogressdlg(app.Fig,'Title','Loading','Message','Reading session...','Indeterminate','on');
             cleanup = onCleanup(@() close(dlg)); %#ok<NASGU>
             try
-                D = readTelemetryData(file);
+                [D, meta] = DataParserMain(file);          % SimLap / CarSim / Assetto
+                app.Decim = max(1, round(meta.fs/100));    % display at ~100 Hz
                 dlg.Message = 'Processing laps...';
                 app.prepareSession(D);
             catch ME
