@@ -547,7 +547,11 @@ classdef TelemetryDashboard < handle
             Lp.glon = D.ax(idx)/app.G0;
             Lp.glat = -app.SignAy*D.ay(idx)/app.G0;     % negative = left turn on the G circle
             Lp.rA = D.yawRate(idx)*180/pi;
-            Lp.rpm = v/N.R*N.G*30/pi;
+            if isfield(D,'rpm') && any(isfinite(D.rpm))
+                Lp.rpm = D.rpm(idx);                 % measured engine speed (rpm)
+            else
+                Lp.rpm = v/N.R*N.G*30/pi;            % derived from torques / wheel speed
+            end
 
             % expected yaw rate from steering (deg/s) and balance error
             dEff = app.SignSteer*Lp.steer/app.SteeringRatio;

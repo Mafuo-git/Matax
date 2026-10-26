@@ -15,8 +15,8 @@ function [D, meta] = DataParserMain(filePath)
 %
 %     Requis   : t, lap, lapTime, x, y, s, yaw, yawRate, speed, ax, ay,
 %                steerAngle, driveForceCmd, brakeForce
-%     Optionnel: driveForce, motorTorque, wheelTorque  (present seulement
-%                si la source permet de le calculer)
+%     Optionnel: driveForce, motorTorque, wheelTorque, rpm  (present
+%                seulement si la source permet de le fournir ; rpm en tr/min)
 %
 %   Un champ requis non disponible dans la source est rempli par NaN et
 %   signale dans la console. meta (2e sortie) decrit la source et les
@@ -77,7 +77,7 @@ function [D, meta] = completeAndCheck(Din, meta, fmt, filePath)
 
     req = {'t','lap','lapTime','x','y','s','yaw','yawRate','speed','ax','ay', ...
            'steerAngle','driveForceCmd','brakeForce'};
-    opt = {'driveForce','motorTorque','wheelTorque'};
+    opt = {'driveForce','motorTorque','wheelTorque','rpm'};
 
     if ~isfield(Din, 't') || isempty(Din.t)
         error('DataParserMain:noTime', 'Le parseur %s n''a pas fourni de vecteur temps.', fmt);
