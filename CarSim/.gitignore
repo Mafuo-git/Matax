@@ -1,0 +1,5 @@
+data/sessions/*
+!data/sessions/.gitkeep
+*.asv
+*.autosave
+slprj/
